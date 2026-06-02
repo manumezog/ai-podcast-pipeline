@@ -1,0 +1,35 @@
+# Environment — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Generated episode data — directories kept via .gitkeep
+data/raw/*.json
+data/curated/*.json
+data/episodes/*.json
+data/published/*.json
+data/seen_urls.json
+
+# Generated scripts
+scripts/*.md
+
+# Audio — large binary files
+audio/chunks/
+audio/episodes/
+audio/music/
+
+# Logs
+logs/*.log
+
+# IDE / tools
+.claude/
+.vscode/
+.idea/
+chroma_db/
+chroma_db_verify/

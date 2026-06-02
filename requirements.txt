@@ -1,0 +1,16 @@
+google-genai>=0.8.0
+numpy>=1.26.0
+boto3>=1.34.0
+pydantic>=2.7.1
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.1
+newsapi-python>=0.2.7
+praw>=7.7.1
+arxiv>=2.1.0
+httpx>=0.27.0
+click>=8.1.7
+python-dateutil>=2.9.0
+pytest>=8.2.1
+
+# ffmpeg is a system dependency — install separately and ensure it is on PATH.
+# https://ffmpeg.org/download.html
