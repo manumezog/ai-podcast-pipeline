@@ -1,6 +1,6 @@
 # AI Podcast Pipeline
 
-A fully automated pipeline that discovers content on a knowledge domain, writes a podcast script using Google Gemini, converts it to speech via Gemini TTS, produces a finished MP3 episode with music, and publishes it to Spotify, Apple Podcasts, Amazon Music, and YouTube Music via an RSS feed.
+A fully automated pipeline that discovers content on a knowledge domain, writes a podcast script using Google Gemini, converts it to speech using a **cloned host voice** (F5-TTS on Modal GPU) and a Gemini co-host voice, produces a finished MP3 with music, and publishes it to Spotify, Apple Podcasts, Amazon Music, and YouTube Music via an RSS feed.
 
 Zero human intervention after the daily cron fires.
 
@@ -8,7 +8,9 @@ Zero human intervention after the daily cron fires.
 
 ## What It Produces
 
-- A ~10-minute dialogue-format episode between two AI hosts
+- A ~10-minute dialogue-format episode between two hosts
+- **Alex** (host) speaks in your own cloned voice via F5-TTS on Modal
+- **Sam** (co-host) speaks in a Gemini TTS voice
 - Ambient intro and outro music (synthesized, no external assets needed)
 - MP3 uploaded to Cloudflare R2 (free tier)
 - RSS feed updated on GitHub Pages
@@ -20,22 +22,24 @@ Zero human intervention after the daily cron fires.
 
 ```
 Stage 1 — content_discovery.py
-  NewsAPI + ArXiv → scored, deduped item list → data/raw/YYYY-MM-DD.json
+  NewsAPI + ArXiv -> scored, deduped item list -> data/raw/YYYY-MM-DD.json
 
 Stage 2 — content_curator.py
-  Gemini scores and filters → top 5 stories → data/curated/YYYY-MM-DD.json
+  Gemini scores and filters -> top 5 stories -> data/curated/YYYY-MM-DD.json
 
 Stage 3 — script_writer.py
-  Gemini writes a two-host dialogue script → scripts/YYYY-MM-DD.md
+  Gemini writes a two-host dialogue script -> scripts/YYYY-MM-DD.md
 
 Stage 4 — tts_generator.py
-  Gemini TTS synthesizes per-speaker WAV chunks → stitched MP3 with music
+  Alex's lines -> F5-TTS (cloned voice) via Modal GPU
+  Sam's lines  -> Gemini TTS (Aoede voice)
+  Chunks stitched into MP3 with intro/outro music
 
 Stage 5 — pipeline_runner.py
-  Orchestrates stages 1–4, writes episode metadata
+  Orchestrates stages 1-4, writes episode metadata
 
 Stage 6 — publisher.py
-  Uploads MP3 to Cloudflare R2, updates RSS feed on GitHub, all platforms sync
+  Uploads MP3 to Cloudflare R2, updates RSS feed on GitHub
 ```
 
 Each stage is independently runnable and idempotent — re-runs resume from the failed stage rather than starting over.
@@ -48,7 +52,8 @@ Each stage is independently runnable and idempotent — re-runs resume from the 
 |---|---|
 | Language | Python 3.11+ |
 | LLM (curation + scripting) | Google Gemini 2.5 Flash |
-| TTS | Google Gemini TTS (`gemini-2.5-flash-preview-tts`) |
+| Host voice (Alex) | F5-TTS on Modal serverless GPU |
+| Co-host voice (Sam) | Google Gemini TTS (`gemini-2.5-flash-preview-tts`) |
 | Audio processing | ffmpeg |
 | Music generation | Pure Python + numpy (no external assets) |
 | Content sources | NewsAPI, ArXiv |
@@ -66,6 +71,7 @@ Each stage is independently runnable and idempotent — re-runs resume from the 
   brew install ffmpeg          # macOS
   sudo apt install ffmpeg      # Ubuntu
   ```
+- Modal CLI authenticated (`pip install modal && modal token new`)
 - API keys (see Configuration)
 
 ---
@@ -90,10 +96,10 @@ All settings live in `.env`. Copy `.env.example` and fill in your values.
 
 | Key | Where to get it |
 |---|---|
-| `GOOGLE_API_KEY` | [Google AI Studio](https://aistudio.google.com) → API Keys |
-| `NEWSAPI_KEY` | [newsapi.org](https://newsapi.org) → free account |
-| `CLOUDFLARE_R2_*` | Cloudflare Dashboard → R2 → Manage R2 API Tokens |
-| `GITHUB_TOKEN` | GitHub → Settings → Developer settings → Fine-grained tokens |
+| `GOOGLE_API_KEY` | [Google AI Studio](https://aistudio.google.com) -> API Keys |
+| `NEWSAPI_KEY` | [newsapi.org](https://newsapi.org) -> free account |
+| `CLOUDFLARE_R2_*` | Cloudflare Dashboard -> R2 -> Manage R2 API Tokens |
+| `GITHUB_TOKEN` | GitHub -> Settings -> Developer settings -> Fine-grained tokens |
 
 Reddit credentials are optional — ArXiv + NewsAPI are sufficient.
 
@@ -102,25 +108,66 @@ Reddit credentials are optional — ArXiv + NewsAPI are sufficient.
 ```env
 # Podcast identity
 SHOW_NAME=The Robotics Brief
-HOST_NAME=Alex          # AI host 1 name (voice: Puck)
+HOST_NAME=Alex          # main host name (uses cloned voice)
+HOST_NAME_2=Sam         # co-host name (uses Gemini TTS voice)
 TOPIC=robotics and automation
 
 # Episode tuning
 EPISODE_TARGET_WORDS=1500
 TOP_N_STORIES=5
 CURATION_THRESHOLD=6    # Gemini score 1-10; items below this are dropped
+TTS_MAX_CHARS_PER_CHUNK=500   # keep low for reliable F5-TTS chunks
 
-# TTS voices (Gemini built-ins: Aoede, Charon, Fenrir, Kore, Puck, Orbit, Zephyr)
-GEMINI_TTS_VOICE=Puck       # Host 1
-GEMINI_TTS_VOICE_2=Aoede    # Host 2 (co-host Sam)
+# Co-host Gemini TTS voice (Aoede, Charon, Fenrir, Kore, Puck, Orbit, Zephyr)
+GEMINI_TTS_VOICE_2=Aoede
 
 # Audio
 SPEECH_TEMPO=1.12           # 1.0 = normal speed, 1.12 = 12% faster
-INTRO_MUSIC_DURATION=6.0    # seconds
-OUTRO_MUSIC_DURATION=12.0   # seconds
+INTRO_MUSIC_DURATION=6.0
+OUTRO_MUSIC_DURATION=12.0
 ```
 
 See `.env.example` for the full list including publishing keys.
+
+---
+
+## Voice Cloning Setup (Host — Alex)
+
+Alex's voice is cloned from a short audio sample using F5-TTS, served via a persistent Modal serverless GPU endpoint.
+
+### One-time setup
+
+**1. Record your voice sample**
+
+Record ~10 seconds of yourself speaking clearly. Save it as an MP3 or WAV file anywhere on your machine. Note the exact words you spoke.
+
+**2. Set the reference audio in `.env`**
+
+```env
+F5_REF_AUDIO_PATH=C:\path\to\your_voice_sample.mp3
+F5_REF_TEXT=The exact sentence you spoke in that recording.
+```
+
+**3. Deploy the Modal TTS server**
+
+```bash
+pip install modal
+modal token new          # opens browser, sign up free at modal.com
+modal deploy modal_tts_server.py
+```
+
+Modal prints a permanent URL:
+```
+Created Web Function URL for TTSServer.run => https://yourname--f5-tts-server-ttsserver-run.modal.run
+```
+
+**4. Add that URL to `.env`**
+
+```env
+F5_SERVER_URL=https://yourname--f5-tts-server-ttsserver-run.modal.run
+```
+
+That's it. The URL never changes. Modal spins up a T4 GPU automatically when the pipeline calls it — no Colab, no manual steps, no session management.
 
 ---
 
@@ -165,7 +212,7 @@ python -m modules.publisher --date 2026-06-02 --dry-run
 | `--force` | Re-run all stages even if outputs exist |
 | `--test` | Skip discovery, use cached Stage 1 output |
 | `--stub-curator` | Skip Gemini curation, pass all items through with score=7 |
-| `--dry-run` | Skip Gemini TTS and R2 upload; use silent audio placeholders |
+| `--dry-run` | Skip TTS API calls; use silent audio placeholders |
 | `--publish` | Run Stage 6: upload to R2 and push RSS feed to GitHub |
 
 ---
@@ -176,6 +223,7 @@ python -m modules.publisher --date 2026-06-02 --dry-run
 ai-podcast-pipeline/
 ├── pipeline_runner.py          # Stage 5 — orchestrator
 ├── config.py                   # All settings via PodcastConfig(BaseSettings)
+├── modal_tts_server.py         # F5-TTS serverless GPU endpoint (deploy to Modal)
 ├── requirements.txt
 ├── .env.example                # Template for environment variables
 ├── PUBLISHING_SETUP.md         # Step-by-step Cloudflare R2 + GitHub setup
@@ -184,7 +232,7 @@ ai-podcast-pipeline/
 │   ├── content_discovery.py    # Stage 1 — NewsAPI + ArXiv
 │   ├── content_curator.py      # Stage 2 — Gemini scoring + filtering
 │   ├── script_writer.py        # Stage 3 — Gemini dialogue script
-│   ├── tts_generator.py        # Stage 4 — Gemini TTS + ffmpeg
+│   ├── tts_generator.py        # Stage 4 — F5-TTS (Alex) + Gemini TTS (Sam)
 │   ├── music_generator.py      # Ambient intro/outro music via numpy
 │   ├── publisher.py            # Stage 6 — R2 upload + RSS + GitHub
 │   └── utils/
@@ -209,12 +257,12 @@ ai-podcast-pipeline/
 Every stage checks whether its output file already exists before running:
 
 ```
-data/raw/YYYY-MM-DD.json        → Stage 1 guard
-data/curated/YYYY-MM-DD.json    → Stage 2 guard
-scripts/YYYY-MM-DD.md           → Stage 3 guard
-audio/episodes/YYYY-MM-DD.mp3  → Stage 4 guard
-data/episodes/YYYY-MM-DD.json  → Stage 5 guard (completion sentinel)
-data/published/YYYY-MM-DD.json → Stage 6 guard
+data/raw/YYYY-MM-DD.json        -> Stage 1 guard
+data/curated/YYYY-MM-DD.json    -> Stage 2 guard
+scripts/YYYY-MM-DD.md           -> Stage 3 guard
+audio/episodes/YYYY-MM-DD.mp3  -> Stage 4 guard
+data/episodes/YYYY-MM-DD.json  -> Stage 5 guard (completion sentinel)
+data/published/YYYY-MM-DD.json -> Stage 6 guard
 ```
 
 If Stage 4 fails, re-running picks up from Stage 4 — Stages 1–3 are not re-executed. Use `--force` to override.
@@ -223,7 +271,7 @@ If Stage 4 fails, re-running picks up from Stage 4 — Stages 1–3 are not re-e
 
 ## Cross-Episode Deduplication
 
-`SeenURLStore` (`modules/utils/seen_urls.py`) tracks which story URLs have been used in past episodes. Stories already covered are excluded from discovery automatically. URLs are only marked as seen after a **fully successful real episode** — failed runs and dry-runs don't consume URLs.
+`SeenURLStore` (`modules/utils/seen_urls.py`) tracks which story URLs have been used in past episodes. Stories already covered are excluded from discovery automatically. URLs are only marked as seen after a fully successful real episode — failed runs and dry-runs don't consume URLs.
 
 The store purges entries older than 30 days automatically.
 
@@ -240,7 +288,7 @@ Alex: Right, and what's wild is — it's not the tech that's surprising.
 Sam: No, it's the timing. Because if you look at what came out of MIT last month...
 ```
 
-Each speaker's lines are synthesized with a distinct Gemini TTS voice and stitched in sequence. The final episode is: `[6s music intro] → [dialogue] → [12s music outro]`.
+Alex's lines are synthesized with your cloned F5-TTS voice via Modal. Sam's lines use Gemini TTS (Aoede). The final episode is: `[6s music intro] -> [dialogue] -> [12s music outro]`.
 
 ---
 
@@ -258,11 +306,13 @@ Once configured, `--publish` uploads the episode MP3 to R2, generates show notes
 
 ---
 
-## Automating with Cron
+## Automating with Windows Task Scheduler
 
-```bash
-# Run every day at 6am
-0 6 * * * cd /path/to/ai-podcast-pipeline && python pipeline_runner.py --publish >> logs/cron.log 2>&1
+The included `run_podcast.bat` runs the full pipeline and logs output to `logs/scheduler.log`. Schedule it via Task Scheduler to run every Saturday (or daily) at a fixed time.
+
+```
+Action: run_podcast.bat
+Start in: C:\Users\yourname\Desktop\IA Projects\podcaster
 ```
 
 ---
@@ -271,16 +321,19 @@ Once configured, `--publish` uploads the episode MP3 to R2, generates show notes
 
 At daily frequency with default settings:
 
-| Service | Usage | Cost |
+| Service | Usage | Monthly cost |
 |---|---|---|
-| Gemini 2.5 Flash (text) | ~2000 tokens/episode | ~$0.001 |
-| Gemini TTS | ~1500 words/episode | ~$0.02–0.05 |
+| Gemini 2.5 Flash (text) | ~2000 tokens/episode | ~$0.03 |
+| Gemini TTS (Sam only) | ~750 words/episode | ~$0.30–0.60 |
+| Modal F5-TTS (Alex, T4 GPU) | ~350s GPU/episode | ~$0.20 |
 | NewsAPI | 1 request/day | Free tier |
 | ArXiv | 1 request/day | Free |
 | Cloudflare R2 | ~10MB/episode | Free tier (10GB) |
 | GitHub Pages | RSS feed | Free |
 
-**Estimated total: ~$1–2/month.**
+**Estimated total: ~$0.60–1/month at daily frequency.**
+
+Modal provides **$30/month in free compute credits** — covering approximately 5 months of daily episodes before any charges apply.
 
 ---
 

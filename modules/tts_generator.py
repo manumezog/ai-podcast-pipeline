@@ -18,8 +18,8 @@ MUSIC (cfg.enable_music=True, default):
     ffmpeg concatenation. Music files are synthesised once and cached.
 
 AUDIO PIPELINE:
-    script → parse dialogue → per-speaker WAV chunks → ffmpeg concat → speech.mp3
-    speech.mp3 + intro.wav + outro.wav → ffmpeg concat → final episode.mp3
+    script -> parse dialogue -> per-speaker WAV chunks -> ffmpeg concat -> speech.mp3
+    speech.mp3 + intro.wav + outro.wav -> ffmpeg concat -> final episode.mp3
 
 IDEMPOTENCY:
     Per-chunk WAV files are reused if they exist. The final episode MP3 is
@@ -60,7 +60,7 @@ def find_ffmpeg(cfg: PodcastConfig | None = None) -> str:
     """
     Resolve the ffmpeg executable path.
 
-    Order: cfg.ffmpeg_path → PATH → winget package glob.
+    Order: cfg.ffmpeg_path -> PATH -> winget package glob.
     Raises FileNotFoundError with setup instructions if not found.
     """
     if cfg and cfg.ffmpeg_path:
@@ -229,6 +229,98 @@ def _make_silent_wav(duration_seconds: float = 1.0) -> bytes:
 
 # ── Per-chunk synthesis ───────────────────────────────────────────────────────
 
+def synthesize_chunk_f5_tts(
+    text: str,
+    chunk_index: int,
+    run_date: date,
+    cfg: PodcastConfig,
+    dry_run: bool = False,
+) -> Path:
+    """
+    Synthesize one text chunk with F5-TTS using the host's cloned voice.
+
+    Two modes selected by cfg.f5_server_url:
+      - Remote (Colab/GPU): POSTs {ref_audio_b64, ref_text, gen_text} to the
+        Flask server running on your Colab notebook. Fast (~2-5s/chunk on T4).
+      - Local CPU: uses the locally installed f5-tts package. Slow but free.
+
+    Falls back to a silent WAV placeholder in dry-run mode.
+    """
+    chunk_dir = Path(cfg.audio_dir) / "chunks" / str(run_date)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = "wav" if dry_run else "mp3"
+    chunk_path = chunk_dir / f"chunk_{chunk_index:03d}_f5.{ext}"
+
+    if chunk_path.exists():
+        logger.debug("F5-TTS chunk %03d exists, reusing.", chunk_index)
+        return chunk_path
+
+    if dry_run:
+        chunk_path.write_bytes(_make_silent_wav())
+        return chunk_path
+
+    from pydub import AudioSegment
+
+    if cfg.f5_server_url:
+        # ── Remote Colab server ───────────────────────────────────────────
+        import base64, httpx
+
+        ref_b64 = base64.b64encode(Path(cfg.f5_ref_audio_path).read_bytes()).decode()
+
+        def _call_remote() -> Path:
+            resp = httpx.post(
+                cfg.f5_server_url,
+                json={"ref_audio": ref_b64, "ref_text": cfg.f5_ref_text, "gen_text": text},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            segment = AudioSegment.from_file(__import__("io").BytesIO(resp.content))
+            segment.export(str(chunk_path), format="mp3")
+            return chunk_path
+
+        out = retry_with_backoff(
+            _call_remote,
+            max_attempts=cfg.retry_max_attempts,
+            base_delay=cfg.retry_base_delay,
+        )
+    else:
+        # ── Local CPU inference ───────────────────────────────────────────
+        try:
+            from f5_tts.api import F5TTS
+        except ImportError:
+            raise RuntimeError(
+                "f5-tts is not installed. Run: pip install f5-tts\n"
+                "Or set F5_SERVER_URL in .env to use your Colab GPU server instead."
+            )
+        import soundfile as sf
+        import numpy as np
+
+        tts = F5TTS()
+
+        def _call_local() -> Path:
+            wav, sr, _ = tts.infer(
+                ref_file=cfg.f5_ref_audio_path,
+                ref_text=cfg.f5_ref_text,
+                gen_text=text,
+            )
+            tmp_wav = chunk_path.with_suffix(".tmp.wav")
+            sf.write(str(tmp_wav), np.array(wav), sr)
+            segment = AudioSegment.from_wav(str(tmp_wav))
+            segment.export(str(chunk_path), format="mp3")
+            tmp_wav.unlink(missing_ok=True)
+            return chunk_path
+
+        out = retry_with_backoff(
+            _call_local,
+            max_attempts=cfg.retry_max_attempts,
+            base_delay=cfg.retry_base_delay,
+        )
+
+    logger.info("F5-TTS chunk %03d: %d chars -> %s.", chunk_index, len(text), chunk_path.name)
+    return out
+
+
 def synthesize_chunk(
     text: str,
     chunk_index: int,
@@ -299,7 +391,7 @@ def synthesize_chunk(
     )
     wav_bytes = pcm_to_wav(pcm_bytes)
     chunk_path.write_bytes(wav_bytes)
-    logger.info("Chunk %03d [%s]: %d chars → %d bytes WAV.", chunk_index, voice, len(text), len(wav_bytes))
+    logger.info("Chunk %03d [%s]: %d chars -> %d bytes WAV.", chunk_index, voice, len(text), len(wav_bytes))
     return chunk_path
 
 
@@ -338,7 +430,7 @@ def stitch_audio_chunks(chunk_paths: List[Path], output_path: Path, cfg: Podcast
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg stitch failed (exit {result.returncode}):\n{result.stderr[-2000:]}")
-        logger.info("Stitched %d chunks → %s.", len(chunk_paths), output_path)
+        logger.info("Stitched %d chunks -> %s.", len(chunk_paths), output_path)
         return output_path
     finally:
         if concat_file.exists():
@@ -360,7 +452,7 @@ def _stitch_wav_python(chunk_paths: List[Path], output_path: Path) -> Path:
     with wave.open(str(output_path), "wb") as wf:
         wf.setparams(params)
         wf.writeframes(all_frames)
-    logger.info("Dry-run: stitched %d WAV chunks → %s.", len(chunk_paths), output_path)
+    logger.info("Dry-run: stitched %d WAV chunks -> %s.", len(chunk_paths), output_path)
     return output_path
 
 
@@ -419,7 +511,7 @@ def mix_with_music(
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg music mix failed:\n{result.stderr[-1000:]}")
-        logger.info("Music mix complete → %s.", output_path)
+        logger.info("Music mix complete -> %s.", output_path)
         return output_path
     except Exception as exc:
         logger.warning("Music mixing failed (%s) — using speech-only.", exc)
@@ -467,17 +559,25 @@ def run_tts_generator(
             len(groups), cfg.host_name, cfg.host_name_2, dry_run,
         )
         chunk_paths: List[Path] = []
+        use_f5 = bool(cfg.f5_ref_audio_path and cfg.f5_ref_text)
         for i, (speaker, text) in enumerate(groups):
-            voice = cfg.gemini_tts_voice_2 if speaker == cfg.host_name_2 else cfg.gemini_tts_voice
-            chunk_path = synthesize_chunk(text, i, run_date, cfg, voice=voice, dry_run=dry_run)
+            if speaker == cfg.host_name and use_f5:
+                chunk_path = synthesize_chunk_f5_tts(text, i, run_date, cfg, dry_run=dry_run)
+            else:
+                voice = cfg.gemini_tts_voice_2 if speaker == cfg.host_name_2 else cfg.gemini_tts_voice
+                chunk_path = synthesize_chunk(text, i, run_date, cfg, voice=voice, dry_run=dry_run)
             chunk_paths.append(chunk_path)
             logger.info("Stage 4: group %d/%d [%s] complete.", i + 1, len(groups), speaker)
     else:
         chunks = chunk_script(script_text, max_chars=cfg.tts_max_chars_per_chunk)
         logger.info("Stage 4: single-voice mode — %d chunks, dry_run=%s.", len(chunks), dry_run)
         chunk_paths = []
+        use_f5 = bool(cfg.f5_ref_audio_path and cfg.f5_ref_text)
         for i, text in enumerate(chunks):
-            chunk_path = synthesize_chunk(text, i, run_date, cfg, dry_run=dry_run)
+            if use_f5:
+                chunk_path = synthesize_chunk_f5_tts(text, i, run_date, cfg, dry_run=dry_run)
+            else:
+                chunk_path = synthesize_chunk(text, i, run_date, cfg, dry_run=dry_run)
             chunk_paths.append(chunk_path)
             logger.info("Stage 4: chunk %d/%d complete.", i + 1, len(chunks))
 

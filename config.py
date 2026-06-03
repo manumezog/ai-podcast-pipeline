@@ -44,6 +44,24 @@ class PodcastConfig(BaseSettings):
     host_name: str = Field(default="Alex")
     topic: str = Field(default="robotics and automation")
 
+    # ── F5-TTS cloned host voice ──────────────────────────────────────────────
+    f5_ref_audio_path: str = Field(
+        default="",
+        description="Path to a ~10s MP3/WAV of your voice. When set, Alex's lines use F5-TTS.",
+    )
+    f5_ref_text: str = Field(
+        default="",
+        description="Exact transcript of the words spoken in f5_ref_audio_path.",
+    )
+    f5_server_url: str = Field(
+        default="",
+        description=(
+            "Optional: URL of a remote F5-TTS Flask server (e.g. your Google Colab ngrok tunnel). "
+            "When set, inference is offloaded there (GPU speed). "
+            "When empty, local f5-tts CPU inference is used."
+        ),
+    )
+
     # ── Gemini TTS ────────────────────────────────────────────────────────
     gemini_tts_model: str = Field(
         default="gemini-2.5-flash-preview-tts",
@@ -51,7 +69,7 @@ class PodcastConfig(BaseSettings):
     )
     gemini_tts_voice: str = Field(
         default="Puck",
-        description="Voice for host 1. Options: Aoede, Charon, Fenrir, Kore, Puck, Orbit, Zephyr",
+        description="Fallback Gemini voice for host 1 (used only when fish_audio_voice_id is empty).",
     )
     gemini_tts_voice_2: str = Field(
         default="Aoede",
@@ -110,6 +128,24 @@ class PodcastConfig(BaseSettings):
     ffmpeg_path: str = Field(
         default="",
         description="Full path to ffmpeg executable. Leave empty to auto-detect.",
+    )
+
+    # ── Notifications ─────────────────────────────────────────────────────
+    notification_email: str = Field(
+        default="",
+        description="Recipient email for pipeline success/failure alerts",
+    )
+    gmail_address: str = Field(
+        default="",
+        description="Gmail address used as SMTP sender (must match the App Password)",
+    )
+    gmail_app_password: str = Field(
+        default="",
+        description="Gmail App Password (myaccount.google.com/apppasswords, requires 2FA)",
+    )
+    github_pipeline_repo: str = Field(
+        default="",
+        description="Repo where status/latest.json is pushed, e.g. manumezog/ai-podcast-pipeline",
     )
 
     # ── Deduplication ─────────────────────────────────────────────────────

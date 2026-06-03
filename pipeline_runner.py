@@ -49,6 +49,7 @@ import click
 from config import PodcastConfig, get_config
 from modules.content_discovery import run_discovery, mark_urls_seen
 from modules.content_curator import run_curation
+from modules.notifier import notify_failure, notify_success
 from modules.script_writer import run_script_writer
 from modules.tts_generator import run_tts_generator, find_ffmpeg
 from modules.publisher import run_publisher
@@ -288,15 +289,30 @@ def cli(
     run_date = date.fromisoformat(run_date_str) if run_date_str else date.today()
     cfg = get_config()
     setup_logging(cfg)
-    run_pipeline(
-        run_date=run_date,
-        cfg=cfg,
-        force=force,
-        test_mode=test_mode,
-        stub_curator=stub_curator,
-        dry_run=dry_run,
-        publish=publish,
-    )
+    try:
+        run_pipeline(
+            run_date=run_date,
+            cfg=cfg,
+            force=force,
+            test_mode=test_mode,
+            stub_curator=stub_curator,
+            dry_run=dry_run,
+            publish=publish,
+        )
+        # Notify on success (skip for dry-run / test to avoid noise)
+        if not dry_run and not test_mode:
+            episode_meta_path = Path(cfg.data_dir) / "episodes" / f"{run_date}.json"
+            duration = 0.0
+            audio_path = ""
+            if episode_meta_path.exists():
+                meta = json.loads(episode_meta_path.read_text(encoding="utf-8"))
+                duration = meta.get("duration_seconds", 0.0)
+                audio_path = meta.get("audio_path", "")
+            notify_success(str(run_date), audio_path, duration, cfg)
+    except Exception as exc:
+        logger.error("Pipeline failed: %s", exc, exc_info=True)
+        notify_failure(str(run_date), str(exc), cfg)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
