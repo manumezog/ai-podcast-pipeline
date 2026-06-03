@@ -271,6 +271,7 @@ def synthesize_chunk_f5_tts(
         def _call_remote() -> Path:
             resp = httpx.post(
                 cfg.f5_server_url,
+                headers={"x-api-key": cfg.f5_api_key},
                 json={"ref_audio": ref_b64, "ref_text": cfg.f5_ref_text, "gen_text": text},
                 timeout=120,
             )

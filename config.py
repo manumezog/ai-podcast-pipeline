@@ -56,10 +56,14 @@ class PodcastConfig(BaseSettings):
     f5_server_url: str = Field(
         default="",
         description=(
-            "Optional: URL of a remote F5-TTS Flask server (e.g. your Google Colab ngrok tunnel). "
+            "URL of the Modal F5-TTS endpoint. "
             "When set, inference is offloaded there (GPU speed). "
             "When empty, local f5-tts CPU inference is used."
         ),
+    )
+    f5_api_key: str = Field(
+        default="",
+        description="API key sent as x-api-key header to the Modal TTS endpoint.",
     )
 
     # ── Gemini TTS ────────────────────────────────────────────────────────

@@ -72,6 +72,20 @@ def _github_api(method: str, path: str, token: str, body: dict | None = None) ->
         raise
 
 
+def _redact_secrets(text: str, cfg: Any) -> str:
+    """Replace known secret values with REDACTED so they can't leak via GitHub."""
+    sensitive = [
+        cfg.google_api_key, cfg.newsapi_key, cfg.github_token,
+        cfg.gmail_app_password, cfg.cloudflare_r2_secret_access_key,
+        cfg.reddit_client_secret, cfg.f5_api_key,
+        getattr(cfg, "gmail_address", ""),
+    ]
+    for secret in sensitive:
+        if secret and len(secret) > 4:
+            text = text.replace(secret, "***REDACTED***")
+    return text
+
+
 def push_status_to_github(status: dict, cfg: Any) -> None:
     """Upsert status/latest.json in GITHUB_PIPELINE_REPO via the GitHub Contents API."""
     if not cfg.github_token or not cfg.github_pipeline_repo:
@@ -117,49 +131,48 @@ def notify_success(run_date: str, episode_path: str, duration_seconds: float, cf
     minutes = int(duration_seconds // 60)
     seconds = int(duration_seconds % 60)
     duration_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+    now = datetime.now(timezone.utc).isoformat()
 
-    status = {
-        "last_run": datetime.now(timezone.utc).isoformat(),
+    # GitHub gets minimal public metadata only — no log content, no paths
+    push_status_to_github({
+        "last_run": now,
         "success": True,
         "exit_code": 0,
         "episode_date": run_date,
-        "episode_path": episode_path,
         "duration_seconds": duration_seconds,
-        "log_tail": read_log_tail(cfg),
-    }
-    push_status_to_github(status, cfg)
+    }, cfg)
 
-    subject = f"✅ {cfg.show_name} — Episode {run_date} ready"
+    subject = f"[OK] {cfg.show_name} — Episode {run_date} ready"
     body = (
         f"Episode {run_date} produced successfully.\n\n"
         f"  Duration : {duration_str}\n"
         f"  Audio    : {episode_path}\n\n"
-        f"Pipeline completed at {status['last_run']}."
+        f"Pipeline completed at {now}."
     )
     send_email(subject, body, cfg)
 
 
 def notify_failure(run_date: str, error: str, cfg: Any) -> None:
     log_tail = read_log_tail(cfg)
+    now = datetime.now(timezone.utc).isoformat()
 
-    status = {
-        "last_run": datetime.now(timezone.utc).isoformat(),
+    # GitHub gets minimal metadata — error/log stay email-only to avoid leaking secrets
+    push_status_to_github({
+        "last_run": now,
         "success": False,
         "exit_code": 1,
         "episode_date": run_date,
-        "error": error,
-        "log_tail": log_tail,
-    }
-    push_status_to_github(status, cfg)
+    }, cfg)
 
-    # Extract the most relevant part of the log for the email body
-    relevant_log = _extract_error_context(log_tail)
+    # Redact secrets before including in email body
+    safe_error = _redact_secrets(error, cfg)
+    safe_log = _redact_secrets(_extract_error_context(log_tail), cfg)
 
-    subject = f"⚠️ {cfg.show_name} — Pipeline failed ({run_date})"
+    subject = f"[FAIL] {cfg.show_name} — Pipeline failed ({run_date})"
     body = (
         f"The pipeline failed for episode {run_date}.\n\n"
-        f"Error: {error}\n\n"
-        f"--- Recent log ---\n{relevant_log}"
+        f"Error: {safe_error}\n\n"
+        f"--- Recent log ---\n{safe_log}"
     )
     send_email(subject, body, cfg)
 
