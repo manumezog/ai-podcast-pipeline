@@ -1,6 +1,7 @@
 {
-  "last_run": "2026-06-07T21:37:38.557759+00:00",
-  "success": false,
-  "exit_code": 1,
-  "episode_date": "2026-06-07"
+  "last_run": "2026-06-27T14:32:20.633259+00:00",
+  "success": true,
+  "exit_code": 0,
+  "episode_date": "2026-06-27",
+  "duration_seconds": 844.865917
 }
